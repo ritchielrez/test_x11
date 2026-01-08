@@ -12,7 +12,8 @@
 
 #define WIN_WIDTH 1280
 #define WIN_HEIGHT 720
-#define BACKGROUND_COLOR 0x1e1e2e
+#define BACKGROUND 0x1e1e2e
+#define FOREGOUND 0xcdd6f4
 
 #define CSTR_FMT(str) (sizeof(str) - 1), (str)
 
@@ -41,12 +42,18 @@ int main() {
       connection, screen->root_depth, window, screen->root, 0, 0, WIN_WIDTH,
       WIN_HEIGHT, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual,
       XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK,
-      &(xcb_create_window_value_list_t){.background_pixel = BACKGROUND_COLOR,
+      &(xcb_create_window_value_list_t){.background_pixel = BACKGROUND,
                                         .event_mask = XCB_EVENT_MASK_EXPOSURE});
+
   xcb_icccm_set_wm_name(connection, window, XCB_ATOM_STRING, FORMAT,
                         CSTR_FMT("Test X11"));
   xcb_icccm_set_wm_protocols(connection, window, wm_protocols_prop, 1,
                              &(xcb_atom_t){wm_delete_win_protocol});
+
+  // Create a graphic context for drawing in the foreground.
+  xcb_gcontext_t graphics_context = xcb_generate_id(connection);
+  xcb_aux_create_gc(connection, graphics_context, window, XCB_GC_FOREGROUND,
+                    &(xcb_params_gc_t){.foreground = FOREGOUND});
 
   xcb_map_window(connection, window);
   assert(xcb_flush(connection));
@@ -74,14 +81,21 @@ int main() {
         }
       } break;
 
-      // This event is sent when the parts of the window needs to redrawn.
+      // This event is sent when the parts of the window needs to drawn.
       case XCB_EXPOSE: {
         xcb_expose_event_t *event = (xcb_expose_event_t *)generic_event;
         if (event->window == window) {
           printf("[DEBUG] Data about part of the window that needs to be "
-                 "redrawn, x: %i, "
+                 "drawn, x: %i, "
                  "y:%i, width: %i, height: %i\n",
                  event->x, event->y, event->width, event->height);
+
+          xcb_poly_fill_rectangle(connection, window, graphics_context, 1,
+                                  (xcb_rectangle_t[]){{.x = WIN_WIDTH / 2 - 50,
+                                                       .y = WIN_HEIGHT / 2 - 50,
+                                                       .width = 100,
+                                                       .height = 100}});
+          xcb_flush(connection);
         }
       } break;
       }
