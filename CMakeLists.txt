@@ -4,11 +4,7 @@ set(CMAKE_C_STANDARD 11)
 
 add_executable(main src/main.c)
 
-if (MSVC)
-    target_compile_options(main PRIVATE /W4 /WX)
-else ()
-    target_compile_options(main PRIVATE -Wall -Wextra -Wpedantic -Werror)
-endif ()
+target_compile_options(main PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
 add_subdirectory(vendor/glad)
 target_link_libraries(main glad)
