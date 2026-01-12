@@ -4,8 +4,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include <glad/egl.h>
 #include <glad/gl.h>
+#include <glad/glx.h>
 
 #include <X11/Xlib-xcb.h>
 #include <xcb/xcb.h>
@@ -37,13 +37,18 @@ const char *fragmentShaderSource = "#version 330 core\n"
                                    "}\n\0";
 
 int main() {
-  Display *xlib_display = XOpenDisplay(0);
-  int screen_number = DefaultScreen(xlib_display);
-  assert(xlib_display);
-  // NOTE: Be sure to change it right after creating the xlib_display.
-  XSetEventQueueOwner(xlib_display, XCBOwnsEventQueue);
+  Display *display = XOpenDisplay(0);
+  int screen_number = DefaultScreen(display);
+  assert(display);
+  // NOTE: Be sure to change it right after creating the display.
+  XSetEventQueueOwner(display, XCBOwnsEventQueue);
 
-  xcb_connection_t *connection = XGetXCBConnection(xlib_display);
+  int glx_version = gladLoaderLoadGLX(display, screen_number);
+  assert(glx_version);
+  printf("[DEBUG] Loaded GLX %d.%d\n", GLAD_VERSION_MAJOR(glx_version),
+         GLAD_VERSION_MINOR(glx_version));
+
+  xcb_connection_t *connection = XGetXCBConnection(display);
   assert(!xcb_connection_has_error(connection));
 
   xcb_intern_atom_cookie_t intern_atom_cookie =
@@ -62,12 +67,21 @@ int main() {
 
   xcb_screen_t *screen = xcb_aux_get_screen(connection, screen_number);
 
+  XVisualInfo *visual_info = glXChooseVisual(
+      display, screen_number, (GLint[]){GLX_RGBA, GLX_DOUBLEBUFFER});
+
+  uint32_t colormap = xcb_generate_id(connection);
+  xcb_create_colormap(connection, XCB_COLORMAP_ALLOC_NONE, colormap,
+                      screen->root, (xcb_visualid_t)(visual_info->visualid));
+
   xcb_window_t window = xcb_generate_id(connection);
   xcb_create_window_aux(
       connection, screen->root_depth, window, screen->root, 0, 0, WIN_WIDTH,
-      WIN_HEIGHT, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual,
-      XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK,
+      WIN_HEIGHT, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT,
+      (xcb_visualid_t)visual_info->visualid,
+      XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK | XCB_CW_COLORMAP,
       &(xcb_create_window_value_list_t){.background_pixel = 0x1e1e2e,
+                                        .colormap = colormap,
                                         .event_mask = XCB_EVENT_MASK_EXPOSURE});
 
   xcb_icccm_set_wm_name(connection, window, XCB_ATOM_STRING, FORMAT,
@@ -78,50 +92,8 @@ int main() {
   xcb_map_window(connection, window);
   assert(xcb_flush(connection));
 
-  // We need to load EGL before `eglInitialize()` and after it.
-  // Otherwise glad loads EGL 1.0.
-  // https://github.com/Dav1dde/glad/issues/177
-  int egl_version = gladLoaderLoadEGL(NULL);
-  assert(egl_version);
-
-  EGLDisplay egl_display = eglGetDisplay((EGLNativeDisplayType)xlib_display);
-  assert(egl_display != EGL_NO_DISPLAY);
-  assert(eglInitialize(egl_display, NULL, NULL));
-
-  //  Try to load EGL again after calling `eglInitialize`, this time we pass the
-  //  `egl_display`.
-  egl_version = gladLoaderLoadEGL(egl_display);
-  assert(egl_version);
-  printf("[DEBUG] Loaded EGL %d.%d\n", GLAD_VERSION_MAJOR(egl_version),
-         GLAD_VERSION_MINOR(egl_version));
-
-  EGLConfig egl_config;
-  EGLint num_configs;
-  assert(eglChooseConfig(
-      egl_display,
-      (EGLint[]){EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8,
-                 EGL_ALPHA_SIZE, 8, EGL_COLOR_BUFFER_TYPE, EGL_RGB_BUFFER,
-                 EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT, EGL_NONE},
-      &egl_config, 1, &num_configs));
-  assert(num_configs == 1);
-
-  EGLSurface egl_surface =
-      eglCreateWindowSurface(egl_display, egl_config, window, NULL);
-  if (egl_surface == EGL_NO_SURFACE) {
-    fprintf(stderr, "[ERROR] Unable to create EGL surface (eglError: %d)\n",
-            eglGetError());
-    return 1;
-  }
-
-  eglBindAPI(EGL_OPENGL_API);
-  EGLContext egl_context = eglCreateContext(
-      egl_display, egl_config, EGL_NO_CONTEXT, (EGLint[]){EGL_NONE});
-  if (egl_context == EGL_NO_CONTEXT) {
-    fprintf(stderr, "[ERROR] Unable to create EGL context (eglError: %d)\n",
-            eglGetError());
-    return 1;
-  }
-  eglMakeCurrent(egl_display, egl_surface, egl_surface, egl_context);
+  GLXContext glx_context = glXCreateContext(display, visual_info, NULL, True);
+  glXMakeCurrent(display, window, glx_context);
 
   // Ensure the context is created before trying to load GL functions.
   int gl_version = gladLoaderLoadGL();
@@ -129,19 +101,13 @@ int main() {
   printf("[DEBUG] Loaded GL %d.%d\n", GLAD_VERSION_MAJOR(gl_version),
          GLAD_VERSION_MINOR(gl_version));
 
-  GLint compileResult;
-
   GLuint vertexShader = glCreateShader(GL_VERTEX_SHADER);
   glShaderSource(vertexShader, 1, &vertexShaderSource, NULL);
   glCompileShader(vertexShader);
-  glGetShaderiv(vertexShader, GL_COMPILE_STATUS, &compileResult);
-  assert(compileResult == GL_TRUE);
 
   GLuint fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
   glShaderSource(fragmentShader, 1, &fragmentShaderSource, NULL);
   glCompileShader(fragmentShader);
-  glGetShaderiv(fragmentShader, GL_COMPILE_STATUS, &compileResult);
-  assert(compileResult == GL_TRUE);
 
   GLuint shaderProgram = glCreateProgram();
   glAttachShader(shaderProgram, vertexShader);
@@ -186,7 +152,7 @@ int main() {
     glBindVertexArray(VAO);
     glDrawArrays(GL_TRIANGLES, 0, 3);
 
-    eglSwapBuffers(egl_display, egl_surface);
+    glXSwapBuffers(display, window);
 
     xcb_generic_event_t *generic_event = NULL;
     while ((generic_event = xcb_poll_for_event(connection))) {
@@ -229,15 +195,13 @@ int main() {
   glDeleteBuffers(1, &VBO);
   glDeleteProgram(shaderProgram);
 
-  gladLoaderUnloadGL();
+  glXMakeContextCurrent(display, None, None, NULL);
+  glXDestroyContext(display, glx_context);
 
-  eglDestroyContext(egl_display, egl_context);
-  eglDestroySurface(egl_display, egl_surface);
-  eglTerminate(egl_display);
-
-  gladLoaderUnloadEGL();
-
+  xcb_free_colormap(connection, colormap);
   xcb_destroy_window(connection, window);
 
-  XCloseDisplay(xlib_display);
+  XCloseDisplay(display);
+
+  gladLoaderUnloadGLX();
 }
